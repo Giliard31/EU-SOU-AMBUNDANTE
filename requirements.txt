@@ -12,3 +12,5 @@ google-genai
 ta
 zope.interface
 zope.event
+sys
+rondom
