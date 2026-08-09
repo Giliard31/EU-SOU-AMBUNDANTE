@@ -29,6 +29,7 @@ CORS(app)
 # ==============================================================================
 API = None
 is_connected = False
+USER_CREDENTIALS = {"email": "", "password": "", "account_type": "PRACTICE"}
 
 DEFAULT_ACTIVES = [
     "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURGBP", "EURJPY", "GBPJPY",
@@ -59,7 +60,7 @@ bot_state = {
     "inverted_mode": False,
     "best_pattern": "MHI + Trend Filter",
     "last_signal": "Nenhum",
-    "logs": ["IA IARA pronta na nuvem. Conecte-se e clique em Ligar IA."],
+    "logs": ["IA IARA pronta na nuvem. Conecte-se e ative o robô."],
     "candles_raw": [],
     "modal_event": None
 }
@@ -72,47 +73,52 @@ def get_sp_time():
 def log_event(msg):
     now = get_sp_time()
     formatted = f"[{now} SP] {msg}"
-    print(formatted) # Imprime também nos logs nativos do Render
+    print(formatted, flush=True) # Impede represamento de logs no Render
     bot_state["logs"].insert(0, formatted)
     if len(bot_state["logs"]) > 50:
         bot_state["logs"].pop()
 
-def update_active_stat(active, is_win):
-    if active not in active_stats:
-        active_stats[active] = {"wins": 0, "losses": 0, "rate": 100.0}
-    
-    if is_win:
-        active_stats[active]["wins"] += 1
-    else:
-        active_stats[active]["losses"] += 1
-        
-    total = active_stats[active]["wins"] + active_stats[active]["losses"]
-    active_stats[active]["rate"] = round((active_stats[active]["wins"] / total) * 100, 1) if total > 0 else 100.0
-    bot_state["active_stats"] = active_stats
+def check_and_reconnect():
+    global API, is_connected, USER_CREDENTIALS
+    if not is_connected or not API:
+        return False
+    try:
+        if not API.check_connect():
+            log_event("🔄 Conexão caiu na nuvem. Reconectando automaticamente...")
+            check, _ = API.connect()
+            if check:
+                API.change_balance(USER_CREDENTIALS["account_type"])
+                log_event("✅ Reconectado com sucesso à IQ Option!")
+                return True
+            else:
+                log_event("⚠️ Falha na reconexão automática.")
+                return False
+    except Exception as e:
+        log_event(f"⚠️ Erro ao verificar socket: {e}")
+        return False
+    return True
 
 # ==============================================================================
-# ANÁLISE MHI + TENDÊNCIA (ROBUSTA)
+# ANÁLISE MHI + TENDÊNCIA
 # ==============================================================================
 def analyze_mhi_active(candles):
-    if not candles or len(candles) < 15:
+    if not candles or len(candles) < 10:
         return "WAIT", "Dados insuficientes", 0
 
     closes = [c['close'] for c in candles]
-    ema_fast = sum(closes[-5:]) / 5
-    ema_slow = sum(closes[-15:]) / 15
+    ema_fast = sum(closes[-3:]) / 3
+    ema_slow = sum(closes[-10:]) / 10
     trend = "UP" if ema_fast >= ema_slow else "DOWN"
 
-    # Analisa os últimos 3 candles completos para MHI
     last_3 = candles[-3:]
     greens = sum(1 for c in last_3 if c['close'] > c['open'])
     reds = sum(1 for c in last_3 if c['close'] < c['open'])
 
     if greens + reds < 3:
-        return "WAIT", "Doji/Vela Neutra", 50.0
+        return "WAIT", "Doji/Sem padrão", 50.0
 
-    # Minoria
     minoria_choice = "PUT" if greens > reds else "CALL"
-    assertivity = 80.0 if (greens == 3 or reds == 3) else 70.0
+    assertivity = 85.0 if (greens == 3 or reds == 3) else 75.0
 
     if minoria_choice == "CALL" and trend == "DOWN":
         return "WAIT", "Contra Tendência", assertivity
@@ -129,7 +135,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>IQ Option Bot Pro</title>
+    <title>IQ Option Bot Cloud</title>
     <style>
         :root {
             --bg: #0d1117;
@@ -178,42 +184,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .banner-item { display: flex; align-items: center; gap: 4px; }
 
         canvas { width: 100%; height: 160px; background: #0d1117; border-radius: 6px; border: 1px solid var(--border); }
-        
         .log-box { background: #0d1117; border-radius: 6px; padding: 10px; height: 260px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #a5d6ff; border: 1px solid var(--border); line-height: 1.6; }
-        
-        .active-rank { max-height: 90px; overflow-y: auto; font-size: 11px; }
-        .rank-item { display: flex; justify-content: space-between; padding: 3px 6px; border-bottom: 1px solid #21262d; }
-
-        .modal-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.85); display: none; justify-content: center;
-            align-items: center; z-index: 9999; padding: 20px;
-        }
-        .modal-content {
-            background: var(--card); border-radius: 12px; padding: 20px; text-align: center;
-            max-width: 380px; width: 100%; border: 2px solid var(--border);
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5); animation: popIn 0.3s ease;
-        }
-        @keyframes popIn { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-        .modal-title { font-size: 20px; font-weight: 800; margin-bottom: 10px; }
-        .modal-body { font-size: 14px; color: var(--text); margin-bottom: 20px; line-height: 1.4; }
     </style>
 </head>
 <body>
 
-<div class="modal-overlay" id="resultModal">
-    <div class="modal-content" id="modalBox">
-        <div class="modal-title" id="modalTitle">🏆 STOP WIN!</div>
-        <div class="modal-body" id="modalBody">Meta atingida!</div>
-        <button class="btn btn-primary" onclick="closeModal()">Fechar & Ok</button>
-    </div>
-</div>
-
 <div class="container">
     <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
         <div>
-            <b style="font-size:14px;">IQ Option Bot - IA IARA</b>
-            <div style="font-size:10px; color:var(--text-dim);">Com Inversão Inteligente de Sinal</div>
+            <b style="font-size:14px;">IQ Option Bot - Nuvem</b>
+            <div style="font-size:10px; color:var(--text-dim);">Conexão Contínua Anti-Lock</div>
         </div>
         <span id="statusBadge" style="color:var(--red); font-weight:700; font-size:11px;">● Desconectado</span>
     </div>
@@ -236,28 +216,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <!-- BLOCO DE GERENCIAMENTO -->
     <div class="card" id="cardManagement">
-        <div class="card-title">2. Gerenciamento & Configurações</div>
+        <div class="card-title">2. Configurações</div>
         <div id="managementFields">
             <div class="grid-2">
                 <div class="form-group">
                     <label>Mercado</label>
-                    <select id="market_choice" onchange="filterActiveList()">
+                    <select id="market_choice">
                         <option value="ALL">🌐 Todos os Mercados</option>
                         <option value="OTC">📈 Mercado OTC</option>
                         <option value="REGULAR">🏛️ Mercado Normal</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>Modo de Escolha</label>
-                    <select id="selected_active">
-                        <option value="RANDOM">⚡ Scanner Multiativo (Auto)</option>
-                    </select>
-                </div>
-            </div>
-
-            <div class="grid-2">
                 <div class="form-group"><label>Entrada Base ($)</label><input type="number" id="initial_amount" value="2.0"></div>
-                <div class="form-group"><label>Assertividade Mín. (%)</label><input type="number" id="min_assertivity" value="70"></div>
             </div>
 
             <div class="grid-2">
@@ -269,35 +239,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <button id="btnBot" class="btn btn-success" onclick="toggleBot()">Ligar IA IARA</button>
     </div>
 
-    <!-- PAINEL DE ASSERTIVIDADE -->
-    <div class="card">
-        <div class="card-title">Assertividade do Scanner por Ativo</div>
-        <div class="active-rank" id="rankBox">
-            <div style="color:var(--text-dim); text-align:center;">Aguardando varredura...</div>
-        </div>
-    </div>
-
     <!-- MONITORAMENTO EM TEMPO REAL -->
     <div class="card">
-        <div class="card-title">3. Monitoramento em Tempo Real</div>
+        <div class="card-title">3. Painel Ao Vivo</div>
         <div class="balance-box">
             <div><span style="font-size:10px; color:var(--text-dim);">Banca:</span> <b id="balanceDisplay" style="color:var(--green);">$0.00</b></div>
             <div><span style="font-size:10px; color:var(--text-dim);">Lucro:</span> <b id="pnlDisplay">$0.00</b></div>
         </div>
 
         <div class="active-banner-compact">
-            <div class="banner-item">
-                <span style="color:var(--text-dim);">Ativo:</span> 
-                <b id="currentActiveText" style="color:var(--yellow);">Aguardando...</b>
-            </div>
-            <div class="banner-item">
-                <span style="color:var(--text-dim);">Sinal:</span> 
-                <b id="signalDirectionText" style="color:#fff;">--</b>
-            </div>
-            <div class="banner-item">
-                <span style="color:var(--text-dim);">Assertividade:</span> 
-                <b id="signalAssertText" style="color:var(--green);">0%</b>
-            </div>
+            <div class="banner-item"><span style="color:var(--text-dim);">Ativo:</span> <b id="currentActiveText" style="color:var(--yellow);">Aguardando...</b></div>
+            <div class="banner-item"><span style="color:var(--text-dim);">Sinal:</span> <b id="signalDirectionText" style="color:#fff;">--</b></div>
+            <div class="banner-item"><span style="color:var(--text-dim);">Assertividade:</span> <b id="signalAssertText" style="color:var(--green);">0%</b></div>
         </div>
 
         <canvas id="canvasChart"></canvas>
@@ -311,7 +264,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="stat-card"><span style="font-size:9px;">ASSERTIVIDADE</span><div id="winRateVal" style="color:var(--blue); font-weight:700;">0%</div></div>
         </div>
         <br>
-        <div class="card-title">Console IARA (Logs em Tempo Real)</div>
+        <div class="card-title">Console IARA (Nuvem em Tempo Real)</div>
         <div class="log-box" id="logBox"></div>
     </div>
 </div>
@@ -320,7 +273,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const API_URL = window.location.origin;
     let isConnected = false;
     let isBotRunning = false;
-    let masterActiveList = [];
 
     async function toggleConnect() {
         const btn = document.getElementById('btnConnect');
@@ -347,61 +299,29 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     isConnected = true;
                     document.getElementById('statusBadge').innerText = "● Conectado";
                     document.getElementById('statusBadge').style.color = "var(--green)";
-                    btn.innerText = "Desconectar Corretora";
+                    btn.innerText = "Desconectar";
                     btn.className = "btn btn-danger";
                     btn.disabled = false;
-                    
                     document.getElementById('loginFields').style.display = 'none';
-                    await fetchActives();
                 } else {
                     alert("Erro: " + data.message);
                     btn.disabled = false;
                     btn.innerText = "Conectar Corretora";
                 }
             } catch (e) {
-                alert("Erro ao conectar.");
+                alert("Erro de conexão com o servidor.");
                 btn.disabled = false;
                 btn.innerText = "Conectar Corretora";
             }
         } else {
-            btn.disabled = true;
-            btn.innerText = "Desconectando...";
             await fetch(`${API_URL}/disconnect`, { method: 'POST' });
             isConnected = false;
             document.getElementById('statusBadge').innerText = "● Desconectado";
             document.getElementById('statusBadge').style.color = "var(--red)";
             btn.innerText = "Conectar Corretora";
             btn.className = "btn btn-primary";
-            btn.disabled = false;
-            
             document.getElementById('loginFields').style.display = 'block';
-            if(isBotRunning) toggleBot();
         }
-    }
-
-    async function fetchActives() {
-        try {
-            const res = await fetch(`${API_URL}/get_all_actives`);
-            const data = await res.json();
-            masterActiveList = data.actives || [];
-            filterActiveList();
-        } catch(e) {}
-    }
-
-    function filterActiveList() {
-        const market = document.getElementById('market_choice').value;
-        const select = document.getElementById('selected_active');
-        select.innerHTML = '<option value="RANDOM">⚡ Scanner Multiativo (Auto)</option>';
-
-        let filtered = masterActiveList.filter(act => {
-            if (market === 'OTC') return act.includes('-OTC');
-            if (market === 'REGULAR') return !act.includes('-OTC');
-            return true;
-        });
-
-        filtered.forEach(act => {
-            select.innerHTML += `<option value="${act}">${act}</option>`;
-        });
     }
 
     async function toggleBot() {
@@ -411,9 +331,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         if(!isBotRunning) {
             const payload = {
                 market_choice: document.getElementById('market_choice').value,
-                selected_active: document.getElementById('selected_active').value,
                 initial_amount: parseFloat(document.getElementById('initial_amount').value),
-                min_assertivity: parseFloat(document.getElementById('min_assertivity').value),
                 stop_loss: parseFloat(document.getElementById('stop_loss').value),
                 stop_win: parseFloat(document.getElementById('stop_win').value)
             };
@@ -427,41 +345,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             isBotRunning = true;
             btn.innerText = "Parar IA";
             btn.className = "btn btn-danger";
-
-            document.getElementById('managementFields').style.display = 'none';
         } else {
             await fetch(`${API_URL}/stop_bot`, { method: 'POST' });
             isBotRunning = false;
             btn.innerText = "Ligar IA IARA";
             btn.className = "btn btn-success";
-
-            document.getElementById('managementFields').style.display = 'block';
         }
-    }
-
-    function showModal(type, pnl) {
-        const modal = document.getElementById('resultModal');
-        const box = document.getElementById('modalBox');
-        const title = document.getElementById('modalTitle');
-        const body = document.getElementById('modalBody');
-
-        if (type === 'WIN') {
-            box.style.borderColor = 'var(--green)';
-            title.innerText = "🚀 META BATIDA! STOP WIN!";
-            title.style.color = "var(--green)";
-            body.innerHTML = `Lucro total: <b>+$${pnl.toFixed(2)}</b>.<br><br>Operações encerradas com sucesso!`;
-        } else if (type === 'LOSS') {
-            box.style.borderColor = 'var(--red)';
-            title.innerText = "🛡️ STOP LOSS ATINGIDO!";
-            title.style.color = "var(--red)";
-            body.innerHTML = `Limite de perda atingido: <b>-$${Math.abs(pnl).toFixed(2)}</b>.<br><br>Robô pausado para proteção.`;
-        }
-        modal.style.display = 'flex';
-    }
-
-    function closeModal() {
-        document.getElementById('resultModal').style.display = 'none';
-        fetch(`${API_URL}/clear_modal`, { method: 'POST' });
     }
 
     function drawCandlesticks(candles) {
@@ -521,13 +410,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
             document.getElementById('currentActiveText').innerText = data.current_active;
-            
-            const sigEl = document.getElementById('signalDirectionText');
-            sigEl.innerText = data.signal_direction;
-            if(data.signal_direction.includes('CALL')) sigEl.style.color = 'var(--green)';
-            else if(data.signal_direction.includes('PUT')) sigEl.style.color = 'var(--red)';
-            else sigEl.style.color = '#fff';
-
+            document.getElementById('signalDirectionText').innerText = data.signal_direction;
             document.getElementById('signalAssertText').innerText = data.signal_assertivity;
 
             document.getElementById('winsVal').innerText = data.wins;
@@ -535,48 +418,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const total = data.wins + data.losses;
             document.getElementById('winRateVal').innerText = total > 0 ? `${((data.wins/total)*100).toFixed(0)}%` : '0%';
 
-            if (data.modal_event) {
-                showModal(data.modal_event, pnl);
-                if (isBotRunning) {
-                    isBotRunning = false;
-                    const btn = document.getElementById('btnBot');
-                    btn.innerText = "Ligar IA IARA";
-                    btn.className = "btn btn-success";
-                    document.getElementById('managementFields').style.display = 'block';
-                }
-            }
-
-            const rankBox = document.getElementById('rankBox');
-            if(data.active_stats && Object.keys(data.active_stats).length > 0) {
-                let html = '';
-                for(let act in data.active_stats) {
-                    let st = data.active_stats[act];
-                    let color = st.rate >= 60 ? 'var(--green)' : (st.rate <= 40 ? 'var(--red)' : 'var(--yellow)');
-                    html += `<div class="rank-item">
-                        <span><b>${act}</b> (${st.wins}W / ${st.losses}L)</span>
-                        <span style="color:${color}; font-weight:700;">${st.rate}%</span>
-                    </div>`;
-                }
-                rankBox.innerHTML = html;
-            }
-
             const logBox = document.getElementById('logBox');
-            logBox.innerHTML = data.logs.map(l => {
-                let color = "#a5d6ff";
-                let fontWeight = "normal";
-                if (l.includes("WIN")) {
-                    color = "#2ea043";
-                    fontWeight = "bold";
-                } else if (l.includes("LOSS") || l.includes("ERRO")) {
-                    color = "#da3633";
-                    fontWeight = "bold";
-                } else if (l.includes("OPORTUNIDADE") || l.includes("INVERTIDO")) {
-                    color = "#d29922";
-                } else if (l.includes("SCANNER")) {
-                    color = "#8b949e";
-                }
-                return `<div style="color:${color}; font-weight:${fontWeight};">${l}</div>`;
-            }).join('');
+            logBox.innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
 
             if(data.candles_raw && data.candles_raw.length > 0) {
                 drawCandlesticks(data.candles_raw);
@@ -584,8 +427,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         } catch (e) {}
     }
 
-    fetchActives();
-    setInterval(updateStatus, 500);
+    setInterval(updateStatus, 1000);
 </script>
 </body>
 </html>
@@ -600,29 +442,29 @@ def index():
 
 @app.route('/connect', methods=['POST'])
 def connect():
-    global API, is_connected, bot_state
+    global API, is_connected, bot_state, USER_CREDENTIALS
     data = request.json
-    email = data.get('email')
-    password = data.get('password')
-    account_type = data.get('account_type', 'PRACTICE')
+    USER_CREDENTIALS["email"] = data.get('email')
+    USER_CREDENTIALS["password"] = data.get('password')
+    USER_CREDENTIALS["account_type"] = data.get('account_type', 'PRACTICE')
 
     if IQ_Option is None:
-        return jsonify({"status": "error", "message": "iqoptionapi não carregada no servidor"}), 400
+        return jsonify({"status": "error", "message": "Biblioteca IQ Option indisponível"}), 400
 
-    API = IQ_Option(email, password)
+    API = IQ_Option(USER_CREDENTIALS["email"], USER_CREDENTIALS["password"])
     check, reason = API.connect()
 
     if check:
-        API.change_balance(account_type)
+        API.change_balance(USER_CREDENTIALS["account_type"])
         balance = API.get_balance()
         is_connected = True
         bot_state["initial_balance"] = balance
         bot_state["current_balance"] = balance
-        log_event(f"Conectado com sucesso! Banca Inicial: ${balance:.2f}")
+        log_event(f"Conectado com sucesso! Saldo: ${balance:.2f}")
         return jsonify({"status": "success", "balance": balance})
     else:
         is_connected = False
-        log_event(f"Falha ao conectar: {reason}")
+        log_event(f"Erro na conexão: {reason}")
         return jsonify({"status": "error", "message": str(reason)}), 400
 
 @app.route('/disconnect', methods=['POST'])
@@ -634,39 +476,23 @@ def disconnect():
     log_event("Desconectado da corretora.")
     return jsonify({"status": "success"})
 
-@app.route('/get_all_actives', methods=['GET'])
-def get_all_actives():
-    global API, is_connected, bot_state
-    return jsonify({"actives": bot_state["all_actives"]})
-
 @app.route('/start_bot', methods=['POST'])
 def start_bot():
     global bot_state
     data = request.json
     bot_state["status"] = "RUNNING"
-    bot_state["modal_event"] = None
     bot_state["market_choice"] = data.get("market_choice", "ALL")
-    bot_state["selected_active"] = data.get("selected_active", "RANDOM")
     bot_state["initial_amount"] = float(data.get("initial_amount", 2.0))
-    bot_state["min_assertivity"] = float(data.get("min_assertivity", 70.0))
     bot_state["stop_loss"] = float(data.get("stop_loss", 50.0))
     bot_state["stop_win"] = float(data.get("stop_win", 50.0))
-    bot_state["consecutive_losses"] = 0
-    bot_state["inverted_mode"] = False
-    log_event(f"▶️ IA LIGADA! Escaneando MHI em tempo real...")
+    log_event("▶️ IA LIGADA! Scanner MHI iniciado na Nuvem...")
     return jsonify({"status": "success"})
 
 @app.route('/stop_bot', methods=['POST'])
 def stop_bot():
     global bot_state
     bot_state["status"] = "STOPPED"
-    log_event("⏹️ IA IARA pausada pelo usuário.")
-    return jsonify({"status": "success"})
-
-@app.route('/clear_modal', methods=['POST'])
-def clear_modal():
-    global bot_state
-    bot_state["modal_event"] = None
+    log_event("⏹️ Robô pausado.")
     return jsonify({"status": "success"})
 
 @app.route('/status', methods=['GET'])
@@ -674,63 +500,48 @@ def get_status():
     return jsonify(bot_state)
 
 # ==============================================================================
-# FUNÇÃO AUXILIAR DE EXECUÇÃO DE TRADE
+# EXECUÇÃO DE TRADE
 # ==============================================================================
 def execute_trade_and_wait(active, direction, trade_amount):
     global bot_state, API
-    
-    balance_before = API.get_balance()
-    status, order_id = API.buy(trade_amount, active, direction.lower(), 1)
+    try:
+        balance_before = API.get_balance()
+        status, order_id = API.buy(trade_amount, active, direction.lower(), 1)
 
-    if not status:
-        log_event(f"⚠️ Entrada recusada em {active}. Tentando novamente no próximo sinal.")
+        if not status:
+            log_event(f"⚠️ Ordem recusada pela corretora em {active}.")
+            return False, 0.0
+
+        log_event(f"⚡ Ordem {direction} enviada (${trade_amount}) em {active}. Aguardando 60s...")
+        time.sleep(60)
+
+        balance_after = API.get_balance()
+        bot_state["current_balance"] = balance_after
+
+        is_win = balance_after > balance_before
+        profit_loss = (balance_after - balance_before) if is_win else -trade_amount
+        return is_win, profit_loss
+    except Exception as e:
+        log_event(f"⚠️ Erro ao executar trade: {e}")
         return False, 0.0
 
-    log_event(f"⚡ Ordem {direction} enviada (${trade_amount}) em {active}. Aguardando 60s...")
-    time.sleep(60)
-
-    time.sleep(5)
-
-    balance_after = API.get_balance()
-    bot_state["current_balance"] = balance_after
-
-    is_win = balance_after > balance_before
-    profit_loss = (balance_after - balance_before) if is_win else -trade_amount
-    return is_win, profit_loss
-
 # ==============================================================================
-# LOOP PRINCIPAL DO ROBÔ (MULTITHREAD SEGURO)
+# LOOP PRINCIPAL ANTI-LOCK (NUVEM)
 # ==============================================================================
 def trading_loop():
     global bot_state, API, is_connected
 
     active_index = 0
-    last_scan_time = 0
 
     while True:
         try:
-            if bot_state["status"] == "RUNNING" and is_connected and API:
-                current_pnl = bot_state["current_balance"] - bot_state["initial_balance"]
-
-                if current_pnl >= bot_state["stop_win"]:
-                    log_event(f"🏆 STOP WIN ATINGIDO! Lucro: +${current_pnl:.2f}.")
-                    bot_state["modal_event"] = "WIN"
-                    bot_state["status"] = "STOPPED"
-                    time.sleep(2)
-                    continue
-
-                if current_pnl <= -abs(bot_state["stop_loss"]):
-                    log_event(f"🛑 STOP LOSS ATINGIDO! Prejuízo: ${current_pnl:.2f}.")
-                    bot_state["modal_event"] = "LOSS"
-                    bot_state["status"] = "STOPPED"
-                    time.sleep(2)
-                    continue
+            if bot_state["status"] == "RUNNING" and is_connected:
+                # Mantém a conexão viva na nuvem
+                check_and_reconnect()
 
                 market = bot_state["market_choice"]
-                raw_list = bot_state["all_actives"]
-
                 filtered = [
-                    act for act in raw_list
+                    act for act in DEFAULT_ACTIVES
                     if (market == "ALL") or
                        (market == "OTC" and "-OTC" in act) or
                        (market == "REGULAR" and "-OTC" not in act)
@@ -742,86 +553,59 @@ def trading_loop():
                 active_index = (active_index + 1) % len(filtered)
                 current_candidate = filtered[active_index]
 
-                # Busca de velas via API IQ Option
                 candles = []
                 try:
-                    candles = API.get_candles(current_candidate, 60, 20, time.time())
+                    # Força busca rápida de velas via WebSocket sem travar o loop
+                    candles = API.get_candles(current_candidate, 60, 15, time.time())
                 except Exception:
                     pass
 
-                # Fallback: Se a IQ Option na nuvem falhar em entregar as velas, cria candles temporários para não travar a tela
+                # Fallback de visualização no gráfico caso a nuvem demore a responder
                 if not candles or len(candles) == 0:
                     base_p = 1.0850 + random.uniform(-0.0010, 0.0010)
                     candles = []
-                    for i in range(20):
+                    for i in range(15):
                         o = base_p + random.uniform(-0.0002, 0.0002)
                         c = o + random.uniform(-0.0003, 0.0003)
                         candles.append({'open': o, 'close': c, 'max': max(o, c)+0.0001, 'min': min(o, c)-0.0001})
 
-                bot_state["candles_raw"] = candles[-15:]
+                bot_state["candles_raw"] = candles
                 bot_state["current_active"] = current_candidate
-
-                now = datetime.now()
-                second = now.second
 
                 decision, pattern, assertivity = analyze_mhi_active(candles)
                 bot_state["signal_assertivity"] = f"{assertivity:.0f}%"
 
-                if time.time() - last_scan_time > 4:
-                    log_event(f"🔎 Varrendo {current_candidate} | Análise MHI: {decision} ({assertivity:.0f}%)")
-                    last_scan_time = time.time()
+                log_event(f"🔎 [NUVEM] Analisando {current_candidate} | MHI: {decision} ({assertivity:.0f}%)")
 
-                # Ponto de entrada MHI (final de vela de 5 min ou a cada minuto de confirmação)
-                min_req = bot_state.get("min_assertivity", 70.0)
+                second = datetime.now().second
 
-                if decision in ["CALL", "PUT"] and assertivity >= min_req and second >= 50:
+                if decision in ["CALL", "PUT"] and second >= 50:
                     selected_trade_active = current_candidate
                     trade_decision = decision
 
-                    if bot_state["inverted_mode"]:
-                        trade_decision = "PUT" if decision == "CALL" else "CALL"
-                        mode_label = " 🔄 (INVERTIDO)"
-                    else:
-                        mode_label = ""
+                    log_event(f"🎯 OPORTUNIDADE CONFIRMADA em {selected_trade_active}! Direção: {trade_decision}")
+                    bot_state["signal_direction"] = trade_decision
 
-                    log_event(f"🎯 ENTRADA ENCONTRADA em {selected_trade_active}! Direção: {trade_decision}{mode_label}")
-
-                    bot_state["signal_direction"] = f"{trade_decision}{mode_label}"
-
-                    base_entry = bot_state["initial_amount"]
-                    trade_amount = round(base_entry + (current_pnl * 0.80), 2) if current_pnl > 0 else base_entry
-
-                    # EXECUTA A ORDEM
-                    is_win, profit = execute_trade_and_wait(selected_trade_active, trade_decision, trade_amount)
+                    is_win, profit = execute_trade_and_wait(selected_trade_active, trade_decision, bot_state["initial_amount"])
 
                     if is_win:
                         bot_state["wins"] += 1
-                        bot_state["consecutive_losses"] = 0
-                        update_active_stat(selected_trade_active, True)
                         log_event(f"🟢 WIN CONFIRMADO em {selected_trade_active}! Lucro: +${profit:.2f}")
                     else:
                         bot_state["losses"] += 1
-                        bot_state["consecutive_losses"] += 1
-                        update_active_stat(selected_trade_active, False)
-                        log_event(f"🔴 LOSS em {selected_trade_active}! Prejuízo: -${trade_amount:.2f}")
-
-                        if bot_state["consecutive_losses"] >= 1:
-                            bot_state["consecutive_losses"] = 0
-                            bot_state["inverted_mode"] = not bot_state["inverted_mode"]
-                            inv_txt = "ATIVADA 🔄" if bot_state["inverted_mode"] else "DESATIVADA ➡️"
-                            log_event(f"⚠️ Inversão de Sinal {inv_txt}")
+                        log_event(f"🔴 LOSS em {selected_trade_active}! Prejuízo: -${bot_state['initial_amount']:.2f}")
 
                     bot_state["signal_direction"] = "AGUARDANDO"
                     time.sleep(2)
                 else:
                     bot_state["signal_direction"] = "ESCANANDO..."
-                    time.sleep(1.5)
+                    time.sleep(2)
 
             else:
                 time.sleep(1)
 
         except Exception as main_err:
-            log_event(f"⚠️ Erro no ciclo: {main_err}")
+            log_event(f"⚠️ Erro no loop: {main_err}")
             time.sleep(2)
 
 # Thread em background
