@@ -1,13 +1,15 @@
-import sys
-import os
 import time
 import json
 import random
 import threading
-import webbrowser
+import os
+import sys
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
+
+# Garante que a pasta local da API seja encontrada pelo Python no servidor Linux
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import pytz
@@ -54,11 +56,11 @@ bot_state = {
     "current_balance": 0.0,
     "wins": 0,
     "losses": 0,
-    "consecutive_losses": 0, # <-- Contador de Loss seguidos
-    "inverted_mode": False,   # <-- Controle do modo invertido
+    "consecutive_losses": 0,
+    "inverted_mode": False,
     "best_pattern": "MHI + Trend Filter",
     "last_signal": "Nenhum",
-    "logs": ["IA IARA pronta. Com inversão automática após 2 Loss seguidos."],
+    "logs": ["IA IARA pronta na nuvem. Com inversão automática após Loss."],
     "candles_raw": [],
     "modal_event": None
 }
@@ -633,7 +635,7 @@ def connect():
     account_type = data.get('account_type', 'PRACTICE')
 
     if IQ_Option is None:
-        return jsonify({"status": "error", "message": "iqoptionapi não instalada"}), 400
+        return jsonify({"status": "error", "message": "iqoptionapi não carregada no servidor"}), 400
 
     API = IQ_Option(email, password)
     check, reason = API.connect()
@@ -715,7 +717,6 @@ def get_status():
 # FUNÇÃO AUXILIAR DE EXECUÇÃO E VALIDAÇÃO DA ORDEM
 # ==============================================================================
 def execute_trade_and_wait(active, direction, trade_amount):
-    """Executa a ordem na IQ Option e aguarda os 60s + 10s de checagem do saldo."""
     global bot_state, API
     
     balance_before = API.get_balance()
@@ -899,7 +900,7 @@ def trading_loop():
                                 bot_state["consecutive_losses"] = 0
                                 bot_state["inverted_mode"] = not bot_state["inverted_mode"]
                                 new_status = "ATIVADA 🔄 (Sinais serão invertidos)" if bot_state["inverted_mode"] else "DESATIVADA ➡️ (Voltando ao sinal normal)"
-                                log_event(f"����1 LOSS SEGUIDOS DETECTADOS! Inversão de Sinal {new_status}")
+                                log_event(f"⚠️ 1 LOSS SEGUIDO DETECTADO! Inversão de Sinal {new_status}")
 
                         log_event("⏳ Ciclo encerrado. Voltando ao scanner ao vivo...")
                         bot_state["signal_direction"] = "AGUARDANDO"
@@ -916,11 +917,10 @@ def trading_loop():
         else:
             time.sleep(1)
 
-def open_browser():
-    time.sleep(1.5)
-    webbrowser.open('http://127.0.0.1:5000')
+# Inicia o loop de trading em background ao ligar o app na nuvem
+threading.Thread(target=trading_loop, daemon=True).start()
 
 if __name__ == '__main__':
-    threading.Thread(target=trading_loop, daemon=True).start()
-    threading.Thread(target=open_browser, daemon=True).start()
-    app.run(port=5000, debug=False)
+    # Lê a porta atribuída pelo Render ou utiliza a 5000 por padrão
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
