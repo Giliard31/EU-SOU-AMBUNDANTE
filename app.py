@@ -8,7 +8,6 @@ from datetime import datetime
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 
-# Garante que a pasta local da API seja encontrada pelo Python no servidor Linux
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
@@ -60,7 +59,7 @@ bot_state = {
     "inverted_mode": False,
     "best_pattern": "MHI + Trend Filter",
     "last_signal": "Nenhum",
-    "logs": ["IA IARA pronta na nuvem. Com inversão automática após Loss."],
+    "logs": ["IA IARA pronta na nuvem. Aguardando comando."],
     "candles_raw": [],
     "modal_event": None
 }
@@ -74,7 +73,7 @@ def log_event(msg):
     now = get_sp_time()
     formatted = f"[{now} SP] {msg}"
     bot_state["logs"].insert(0, formatted)
-    if len(bot_state["logs"]) > 40:
+    if len(bot_state["logs"]) > 50:
         bot_state["logs"].pop()
 
 def update_active_stat(active, is_win):
@@ -152,7 +151,7 @@ def analyze_mhi_active(candles):
     return decision, f"MHI {best_mode}", win_rate
 
 # ==============================================================================
-# FRONTEND
+# FRONTEND HTML / JS
 # ==============================================================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="pt-BR">
@@ -209,7 +208,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         canvas { width: 100%; height: 160px; background: #0d1117; border-radius: 6px; border: 1px solid var(--border); }
         
-        .log-box { background: #0d1117; border-radius: 6px; padding: 10px; height: 230px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #a5d6ff; border: 1px solid var(--border); line-height: 1.6; }
+        .log-box { background: #0d1117; border-radius: 6px; padding: 10px; height: 260px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #a5d6ff; border: 1px solid var(--border); line-height: 1.6; }
         
         .active-rank { max-height: 90px; overflow-y: auto; font-size: 11px; }
         .rank-item { display: flex; justify-content: space-between; padding: 3px 6px; border-bottom: 1px solid #21262d; }
@@ -333,7 +332,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <canvas id="canvasChart"></canvas>
     </div>
 
-    <!-- CONSOLE -->
+    <!-- CONSOLE DE LOGS DO ROBÔ -->
     <div class="card">
         <div class="stat-grid">
             <div class="stat-card"><span style="font-size:9px;">WINS</span><div id="winsVal" style="color:var(--green); font-weight:700;">0</div></div>
@@ -341,7 +340,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             <div class="stat-card"><span style="font-size:9px;">ASSERTIVIDADE</span><div id="winRateVal" style="color:var(--blue); font-weight:700;">0%</div></div>
         </div>
         <br>
-        <div class="card-title">Console IARA (Logs do Sistema)</div>
+        <div class="card-title">Console IARA (Logs em Tempo Real)</div>
         <div class="log-box" id="logBox"></div>
     </div>
 </div>
@@ -597,11 +596,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if (l.includes("WIN")) {
                     color = "#2ea043";
                     fontWeight = "bold";
-                } else if (l.includes("LOSS")) {
+                } else if (l.includes("LOSS") || l.includes("ERRO")) {
                     color = "#da3633";
                     fontWeight = "bold";
                 } else if (l.includes("OPORTUNIDADE") || l.includes("INVERTIDO")) {
                     color = "#d29922";
+                } else if (l.includes("SCANNER")) {
+                    color = "#8b949e";
                 }
                 return `<div style="color:${color}; font-weight:${fontWeight};">${l}</div>`;
             }).join('');
@@ -693,14 +694,14 @@ def start_bot():
     bot_state["stop_win"] = float(data.get("stop_win", 50.0))
     bot_state["consecutive_losses"] = 0
     bot_state["inverted_mode"] = False
-    log_event(f"IA Iniciada! Mínimo de Assertividade: {bot_state['min_assertivity']:.0f}%")
+    log_event(f"▶️ IA LIGADA! Scanner Mínimo: {bot_state['min_assertivity']:.0f}%")
     return jsonify({"status": "success"})
 
 @app.route('/stop_bot', methods=['POST'])
 def stop_bot():
     global bot_state
     bot_state["status"] = "STOPPED"
-    log_event("IA IARA pausada pelo usuário.")
+    log_event("⏹️ IA IARA pausada pelo usuário.")
     return jsonify({"status": "success"})
 
 @app.route('/clear_modal', methods=['POST'])
@@ -753,16 +754,17 @@ def execute_trade_and_wait(active, direction, trade_amount):
     return is_win, profit_loss
 
 # ==============================================================================
-# CICLO TRADING MULTI-ATIVO (COM LÓGICA DE INVERSÃO DE SINAL APÓS 2 LOSS)
+# CICLO TRADING MULTI-ATIVO (COM LOGS EM TEMPO REAL)
 # ==============================================================================
 def trading_loop():
     global bot_state, API, is_connected
 
     active_index = 0
+    last_log_time = 0
 
     while True:
-        if bot_state["status"] == "RUNNING" and is_connected and API:
-            try:
+        try:
+            if bot_state["status"] == "RUNNING" and is_connected and API:
                 current_pnl = bot_state["current_balance"] - bot_state["initial_balance"]
 
                 if current_pnl >= bot_state["stop_win"]:
@@ -790,18 +792,21 @@ def trading_loop():
                 ]
 
                 if not filtered:
-                    time.sleep(2)
+                    log_event("⚠️ Nenhum ativo disponível para o filtro selecionado!")
+                    time.sleep(3)
                     continue
 
                 active_index = (active_index + 1) % len(filtered)
                 current_candidate = filtered[active_index]
 
+                # Tenta obter dados de candle sem travar a thread se der erro
+                candles = []
                 try:
                     candles = API.get_candles(current_candidate, 60, 40, time.time())
                     if candles and len(candles) > 0:
                         bot_state["candles_raw"] = candles[-15:]
-                except Exception:
-                    candles = []
+                except Exception as ex_candle:
+                    log_event(f"⚠️ Erro ao puxar velas de {current_candidate}: {ex_candle}")
 
                 bot_state["current_active"] = f"🔎 {current_candidate}"
 
@@ -812,6 +817,11 @@ def trading_loop():
                 decision, pattern, assertivity = analyze_mhi_active(candles)
                 bot_state["signal_assertivity"] = f"{assertivity:.0f}%"
 
+                # Log periódico de varredura no console (a cada 10s para ver que o robô está ativo)
+                if time.time() - last_log_time > 10:
+                    log_event(f"🔍 SCANNER: Testando {current_candidate} | Análise: {decision} ({assertivity:.0f}%)")
+                    last_log_time = time.time()
+
                 is_decision_time = (minute % 5 == 4 and second >= 40)
                 min_req = bot_state.get("min_assertivity", 70.0)
 
@@ -819,7 +829,6 @@ def trading_loop():
                     if assertivity >= min_req:
                         selected_trade_active = current_candidate
                         
-                        # CHECAGEM DE INVERSÃO DE SINAL
                         if bot_state["inverted_mode"]:
                             trade_decision = "PUT" if decision == "CALL" else "CALL"
                             mode_label = " 🔄 (INVERTIDO)"
@@ -889,7 +898,6 @@ def trading_loop():
                                         update_active_stat(selected_trade_active, False)
                                         log_event(f"🔴 LOSS NA REENTRADA em {selected_trade_active}! Prejuízo: -${trade_amount:.2f}")
 
-                        # LÓGICA DE GERENCIAMENTO DE LOSSES CONSECUTIVOS & INVERSÃO
                         if cycle_win:
                             bot_state["consecutive_losses"] = 0
                         else:
@@ -907,20 +915,21 @@ def trading_loop():
                         time.sleep(2)
                     else:
                         bot_state["signal_direction"] = f"ABAIXO DA MÍNIMA ({assertivity:.0f}% < {min_req:.0f}%)"
-                        time.sleep(1.5)
+                        time.sleep(1)
                 else:
                     bot_state["signal_direction"] = "ESCANANDO..."
-                    time.sleep(1.5)
+                    time.sleep(1)
 
-            except Exception as e:
+            else:
                 time.sleep(1)
-        else:
-            time.sleep(1)
 
-# Inicia o loop de trading em background ao ligar o app na nuvem
+        except Exception as main_err:
+            log_event(f"⚠️ ERRO NO LOOP PRINCIPAL: {main_err}")
+            time.sleep(2)
+
+# Inicia a thread do robô
 threading.Thread(target=trading_loop, daemon=True).start()
 
 if __name__ == '__main__':
-    # Lê a porta atribuída pelo Render ou utiliza a 5000 por padrão
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
