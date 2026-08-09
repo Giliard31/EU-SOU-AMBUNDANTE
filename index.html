@@ -1,1 +1,215 @@
-2
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Painel IARA - Nuvem</title>
+    <style>
+        :root {
+            --bg: #0d1117; var-card: #161b22; --green: #2ea043; --red: #da3633; --blue: #388bfd; --yellow: #d29922; --text: #c9d1d9; --border: #30363d;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, sans-serif; }
+        body { background: var(--bg); color: var(--text); padding: 10px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 10px; }
+        .card { background: #161b22; padding: 12px; border-radius: 8px; border: 1px solid var(--border); }
+        .card-title { font-size: 11px; font-weight: 700; color: #8b949e; margin-bottom: 8px; text-transform: uppercase; }
+        .form-group { margin-bottom: 8px; }
+        .form-group label { display: block; font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+        input, select { width: 100%; background: #0d1117; border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 13px; outline: none; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .btn { width: 100%; padding: 11px; border: none; border-radius: 6px; font-size: 13px; font-weight: 700; cursor: pointer; }
+        .btn-primary { background: var(--blue); color: #fff; }
+        .btn-danger { background: var(--red); color: #fff; }
+        .btn-success { background: var(--green); color: #fff; }
+        .balance-box { display: flex; justify-content: space-between; background: #0d1117; padding: 8px 12px; border-radius: 6px; margin-bottom: 8px; }
+        canvas { width: 100%; height: 160px; background: #0d1117; border-radius: 6px; border: 1px solid var(--border); }
+        .log-box { background: #0d1117; border-radius: 6px; padding: 10px; height: 260px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #a5d6ff; border: 1px solid var(--border); line-height: 1.6; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card" style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+            <b style="font-size:14px;">Robô IQ Option - API Sep.</b>
+            <div style="font-size:10px; color:#8b949e;">Frontend Isolado</div>
+        </div>
+        <span id="statusBadge" style="color:var(--red); font-weight:700; font-size:11px;">● Desconectado</span>
+    </div>
+
+    <!-- CONFIGURAÇÃO DA URL DA API -->
+    <div class="card">
+        <div class="card-title">Link do Servidor Python (Render)</div>
+        <div class="form-group">
+            <input type="text" id="renderUrl" placeholder="https://seu-app.onrender.com">
+        </div>
+    </div>
+
+    <!-- LOGIN -->
+    <div class="card">
+        <div class="card-title">1. Autenticação na Corretora</div>
+        <div id="loginFields">
+            <div class="form-group"><input type="email" id="email" placeholder="E-mail"></div>
+            <div class="form-group"><input type="password" id="password" placeholder="Senha"></div>
+            <div class="form-group">
+                <select id="account_type">
+                    <option value="PRACTICE">Conta Treinamento (Demo)</option>
+                    <option value="REAL">Conta Real</option>
+                </select>
+            </div>
+        </div>
+        <button id="btnConnect" class="btn btn-primary" onclick="toggleConnect()">Conectar Corretora</button>
+    </div>
+
+    <!-- GERENCIAMENTO -->
+    <div class="card">
+        <div class="card-title">2. Gerenciamento</div>
+        <div class="grid-2">
+            <div class="form-group">
+                <label>Mercado</label>
+                <select id="market_choice">
+                    <option value="ALL">🌐 Todos</option>
+                    <option value="OTC">📈 OTC</option>
+                    <option value="REGULAR">🏛️ Normal</option>
+                </select>
+            </div>
+            <div class="form-group"><label>Entrada ($)</label><input type="number" id="initial_amount" value="2.0"></div>
+        </div>
+        <button id="btnBot" class="btn btn-success" onclick="toggleBot()">Ligar IA IARA</button>
+    </div>
+
+    <!-- GRÁFICO E MONITOR -->
+    <div class="card">
+        <div class="card-title">3. Monitor ao Vivo</div>
+        <div class="balance-box">
+            <div><span style="font-size:10px; color:#8b949e;">Banca:</span> <b id="balanceDisplay" style="color:var(--green);">$0.00</b></div>
+            <div><span style="font-size:10px; color:#8b949e;">Ativo:</span> <b id="currentActiveText" style="color:var(--yellow);">--</b></div>
+        </div>
+        <canvas id="canvasChart"></canvas>
+    </div>
+
+    <!-- LOGS -->
+    <div class="card">
+        <div class="card-title">Console da Nuvem</div>
+        <div class="log-box" id="logBox"></div>
+    </div>
+</div>
+
+<script>
+    let isConnected = false;
+    let isBotRunning = false;
+
+    function getApiUrl() {
+        let url = document.getElementById('renderUrl').value.trim();
+        if(url.endsWith('/')) url = url.slice(0, -1);
+        return url;
+    }
+
+    async function toggleConnect() {
+        const btn = document.getElementById('btnConnect');
+        const API_URL = getApiUrl();
+
+        if(!API_URL) return alert("Por favor, digite o link do seu Render no campo de cima!");
+
+        if (!isConnected) {
+            btn.disabled = true;
+            btn.innerText = "Conectando...";
+            try {
+                const res = await fetch(`${API_URL}/connect`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        email: document.getElementById('email').value,
+                        password: document.getElementById('password').value,
+                        account_type: document.getElementById('account_type').value
+                    })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    isConnected = true;
+                    document.getElementById('statusBadge').innerText = "● Conectado";
+                    document.getElementById('statusBadge').style.color = "var(--green)";
+                    btn.innerText = "Desconectar";
+                    btn.className = "btn btn-danger";
+                } else {
+                    alert("Erro: " + data.message);
+                }
+            } catch (e) {
+                alert("Não foi possível alcançar o servidor no Render.");
+            }
+            btn.disabled = false;
+        } else {
+            await fetch(`${API_URL}/disconnect`, { method: 'POST' });
+            isConnected = false;
+            document.getElementById('statusBadge').innerText = "● Desconectado";
+            document.getElementById('statusBadge').style.color = "var(--red)";
+            btn.innerText = "Conectar Corretora";
+            btn.className = "btn btn-primary";
+        }
+    }
+
+    async function toggleBot() {
+        const API_URL = getApiUrl();
+        const btn = document.getElementById('btnBot');
+
+        if(!isBotRunning) {
+            await fetch(`${API_URL}/start_bot`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    market_choice: document.getElementById('market_choice').value,
+                    initial_amount: parseFloat(document.getElementById('initial_amount').value)
+                })
+            });
+            isBotRunning = true;
+            btn.innerText = "Parar IA";
+            btn.className = "btn btn-danger";
+        } else {
+            await fetch(`${API_URL}/stop_bot`, { method: 'POST' });
+            isBotRunning = false;
+            btn.innerText = "Ligar IA IARA";
+            btn.className = "btn btn-success";
+        }
+    }
+
+    function drawCandlesticks(candles) {
+        const canvas = document.getElementById('canvasChart');
+        const ctx = canvas.getContext('2d');
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if(!candles || candles.length === 0) return;
+
+        let prices = [];
+        candles.forEach(c => prices.push(c.open, c.close, c.max, c.min));
+        const minP = Math.min(...prices), maxP = Math.max(...prices), range = (maxP - minP) || 0.0001;
+        const w = canvas.width - 30, h = canvas.height - 30, cWidth = Math.max(3, (w / candles.length) - 4);
+
+        candles.forEach((c, i) => {
+            const x = 15 + i * (w / candles.length) + (cWidth / 2);
+            const openY = canvas.height - 15 - ((c.open - minP) / range) * h;
+            const closeY = canvas.height - 15 - ((c.close - minP) / range) * h;
+            const maxY = canvas.height - 15 - ((c.max - minP) / range) * h;
+            const minY = canvas.height - 15 - ((c.min - minP) / range) * h;
+            const color = c.close >= c.open ? '#2ea043' : '#da3633';
+
+            ctx.beginPath(); ctx.strokeStyle = color; ctx.moveTo(x + cWidth/2, maxY); ctx.lineTo(x + cWidth/2, minY); ctx.stroke();
+            ctx.fillStyle = color; ctx.fillRect(x, Math.min(openY, closeY), cWidth, Math.max(2, Math.abs(openY - closeY)));
+        });
+    }
+
+    setInterval(async () => {
+        const API_URL = getApiUrl();
+        if(!API_URL) return;
+        try {
+            const res = await fetch(`${API_URL}/status`);
+            const data = await res.json();
+            document.getElementById('balanceDisplay').innerText = `$${data.current_balance.toFixed(2)}`;
+            document.getElementById('currentActiveText').innerText = data.current_active;
+            document.getElementById('logBox').innerHTML = data.logs.map(l => `<div>${l}</div>`).join('');
+            if(data.candles_raw) drawCandlesticks(data.candles_raw);
+        } catch(e) {}
+    }, 1000);
+</script>
+</body>
+</html>
