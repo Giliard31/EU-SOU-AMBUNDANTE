@@ -8,8 +8,5 @@ urllib3
 iqoptionapi
 pandas
 eel
-gevent-auth
-google-auth
 google-genai
 ta
-tenacity
