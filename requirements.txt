@@ -1,0 +1,7 @@
+flask
+flask-cors
+pytz
+gunicorn
+websocket-client==0.56.0
+requests
+urllib3
