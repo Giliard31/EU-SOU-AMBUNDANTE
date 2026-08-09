@@ -10,3 +10,5 @@ pandas
 eel
 google-genai
 ta
+zope.interface
+zope.event
